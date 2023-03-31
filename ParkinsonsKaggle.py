@@ -27,9 +27,9 @@ lenc.fit(CATEGORIES)
 
 SAVE_DIR = '/kaggle/working/'
 DATASOURCE = 'lab' # options: lab | realworld | lab_and_realworld
-TASK = 'multiclass' # options: binary | multiclass
-SAMPLES = 192
-jump = 38
+TASK = 'binary' # options: binary | multiclass
+SAMPLES = 192 # lab = 192
+jump = 38 # lab = 38 (80% overlap)
 
 #gpus = tf.config.list_physical_devices('GPU')
 #tf.config.experimental.set_memory_growth(gpus[0], True)
@@ -70,6 +70,7 @@ def get_background_df(FILENAMES,metadata_df):
         labels = [-1]*data.shape[0]
         eventId = filename.split('/')[-1].split('.csv')[0]
         subjectId = metadata_df[metadata_df['Id']==eventId]['Subject'].item()
+        subjectId = eventId
     
         condition = ~data[CATEGORIES].any(axis=1)
         category_df = data[FEATNAMES][condition]
@@ -92,13 +93,8 @@ def get_data_dict(df,unitConversion=1):
         for series in subject_df['series'].unique():
             series_df = subject_df[subject_df['series']==series]
             for category in series_df['label'].unique():
-                #subject_bool = df['subject']==subject
-                #series_bool = df['series']==series
-                #category_bool = df['label']==category
-                #combined_bool = subject_bool & series_bool & category_bool
                 category_df = series_df[series_df['label']==category]
                 if category_df.shape[0] >= SAMPLES: # at least this many samples for this subject from this category
-                    #subject_df = df[combined_bool]
             
                     start = 0
                     end = start + SAMPLES
@@ -254,23 +250,24 @@ if TASK == 'binary': # convert problem to binary classification
 with open('balanced_multiclass_data_dict','wb') as f:
     pickle.dump(subsampled_multiclass_data_dict,f)
 
-# with open('balanced_binary_data_dict','wb') as f:
-#     pickle.dump(subsampled_binary_data_dict,f)
+with open('balanced_binary_data_dict','wb') as f:
+    pickle.dump(subsampled_binary_data_dict,f)
 
 #%%
 with open('balanced_multiclass_data_dict','rb') as f:
     multiclass_data_dict = pickle.load(f)
     
-# with open('balanced_binary_data_dict','rb') as f:
-#     binary_data_dict = pickle.load(f)
+with open('balanced_binary_data_dict','rb') as f:
+    binary_data_dict = pickle.load(f)
 
 #%%
 """ inspect number of samples from each class """
-counts = {i:0 for i in range(3)}
-for key in multiclass_data_dict.keys():
-    for cat in multiclass_data_dict[key].keys():
-        counts[cat] += multiclass_data_dict[key][cat].shape[0]
-print(counts)
+def get_class_counts(multiclass_data_dict):
+    counts = {i:0 for i in range(3)}
+    for key in multiclass_data_dict.keys():
+        for cat in multiclass_data_dict[key].keys():
+            counts[cat] += multiclass_data_dict[key][cat].shape[0]
+    print(counts)
 
 #%%
 def data_generator(subjects,data_dict):
@@ -304,13 +301,18 @@ for fold in range(FOLDS):
     train_nsubjects, val_nsubjects = int(train_frac*nsubjects), int(val_frac*nsubjects)
     train_subjects, val_subjects, test_subjects = subjects[:train_nsubjects], subjects[train_nsubjects:train_nsubjects+val_nsubjects], subjects[train_nsubjects+val_nsubjects:] 
     
-    train_data = tf.data.Dataset.from_generator(lambda: data_generator(train_subjects,multiclass_data_dict), # args=[x,y,z]
+    if TASK == 'multiclass':
+        data_dict = multiclass_data_dict
+    elif TASK == 'binary':
+        data_dict = binary_data_dict
+    
+    train_data = tf.data.Dataset.from_generator(lambda: data_generator(train_subjects,data_dict), # args=[x,y,z]
                                                 output_signature=(
                                                    tf.TensorSpec(shape=(SAMPLES,3), dtype=tf.float64),
                                                    tf.TensorSpec(shape=(SAMPLES), dtype=tf.int32))
                                                ) # shape is at the individual tensor level (not batch)
     
-    val_data = tf.data.Dataset.from_generator(lambda: data_generator(val_subjects,multiclass_data_dict),
+    val_data = tf.data.Dataset.from_generator(lambda: data_generator(val_subjects,data_dict),
                                                 output_signature=(
                                                    tf.TensorSpec(shape=(SAMPLES,3), dtype=tf.float64),
                                                    tf.TensorSpec(shape=(SAMPLES), dtype=tf.int32))
@@ -328,7 +330,7 @@ for fold in range(FOLDS):
         # Shape [batch, time, features] 
         tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64, return_sequences=True)), # returns output at each time-step (i.e., many to many setup)
         # Shape => [batch, time, features]
-        tf.keras.layers.Dense(units=3)
+        tf.keras.layers.Dense(units=3) if TASK == 'multiclass' else tf.keras.layers.Dense(units=1)
     ])
     
     class multiclassAUPRC(tf.keras.metrics.AUC):
@@ -340,15 +342,16 @@ for fold in range(FOLDS):
             y_true = tf.one_hot(y_true,depth=3)
             super().update_state(y_true, y_pred)
     
-    lstm_model.compile(
-                  optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-                  loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-                  metrics=['accuracy',multiclassAUPRC()])
-    
-    # lstm_model.compile(
-    #               optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-    #               loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-    #               metrics=['accuracy',tf.keras.metrics.AUC()])
+    if TASK == 'multiclass':
+        lstm_model.compile(
+                      optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+                      loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                      metrics=['accuracy',multiclassAUPRC()])
+    elif TASK == 'binary':
+        lstm_model.compile(
+                      optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+                      loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+                      metrics=['accuracy',tf.keras.metrics.AUC()])
     
     lstm_model.fit(
         x = train_data,
