@@ -1,5 +1,3 @@
-# parkinsons_fog
-
 # Experiments
 ## Binary classification (Lab)
 ### Hyperparameters
