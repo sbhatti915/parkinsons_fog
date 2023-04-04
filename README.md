@@ -19,3 +19,6 @@ Accuracy = 100%
 Accuracy = 33%
 
 
+# Submission Misc
+Formatting the submission file
+https://www.kaggle.com/competitions/tlvmc-parkinsons-freezing-gait-prediction/discussion/398720
